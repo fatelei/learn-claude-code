@@ -1,0 +1,204 @@
+import glob as g
+import os
+import subprocess
+from pathlib import Path
+
+from anthropic import Anthropic
+from anthropic.types import MessageParam
+from anthropic.types import ToolParam
+from dotenv import load_dotenv
+
+load_dotenv()
+
+client = Anthropic(
+    # This is the default and can be omitted
+    api_key=os.environ.get("ANTHROPIC_API_KEY"),
+)
+
+
+WORKDIR = Path.cwd()
+
+class PathEscapeError(ValueError):
+  """Raised when a target path resolves outside WORKDIR."""
+
+
+def safe_path(path: str | Path) -> Path:
+  if path is None or str(path).strip() == "":
+    raise ValueError("Path must not be empty")
+
+  base = WORKDIR.resolve()
+  raw = Path(path)
+  candidate = raw if raw.is_absolute() else (base / raw)
+  resolved = candidate.resolve()
+
+  if not resolved.is_relative_to(base):
+    raise PathEscapeError(f"Path '{path}' escapes WORKDIR '{base}'")
+
+  return resolved
+
+
+def run_read(path, limit=None):
+    lines = safe_path(path).read_text().splitlines()
+    if limit:
+        lines = lines[:limit]
+    return "\n".join(lines)
+
+def run_write(path, content):
+    safe_path(path).write_text(content)
+    return f"Wrote {len(content)} bytes to {path}"
+
+def run_edit(path, old_text, new_text):
+    text = safe_path(path).read_text()
+    if old_text not in text:
+        return "Error: text not found"
+    safe_path(path).write_text(text.replace(old_text, new_text, 1))
+    return f"Edited {path}"
+
+def run_glob(pattern):
+    return "\n".join(g.glob(pattern, root_dir=WORKDIR))
+
+
+def run_bash(command: str) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout if result.returncode == 0 else result.stderr
+        return output.strip() or "(命令执行成功，无输出)"
+    except Exception as e:
+        return f"执行出错: {e}"
+
+
+TOOL_HANDLERS = {
+    "bash":       run_bash,
+    "read_file":  run_read,
+    "write_file": run_write,
+    "edit_file":  run_edit,
+    "glob":       run_glob,
+}
+
+
+def agent_loop():
+    user_input = input("please input:").strip()
+    print(repr(user_input))
+    messages: list[MessageParam] = [{
+        "role": "user",
+        "content": user_input,
+    }]
+    TOOLS: list[ToolParam] = [
+        {
+            "name": "bash",
+            "description": "Run a shell command.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "需要读取的文件路径",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+        {
+            "name": "read_file",
+            "description": "Read file contents.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "需要读取的文件路径",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "write_file",
+            "description": "Write content to file.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "需要写入的文件路径",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "需要写入文件的内容",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "edit_file",
+            "description": "Replace text in file once.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "需要写入的文件路径",
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "需要替换的内容",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "需要写入文件的内容",
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+        {
+            "name": "glob",
+            "description": "Find files by pattern.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "匹配模式",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    ]
+    model = os.environ.get("ANTHROPIC_MODEL") or "claude-opus-5-5"
+    while True:
+        response = client.messages.create(
+            model=model,
+            system="you are assistant",
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=8000,
+        )
+        messages.append({"role": "assistant", "content": response.content})
+
+        if response.stop_reason != "tool_use":
+            return
+
+        results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                handler = TOOL_HANDLERS[block.name]    # lookup
+                output = handler(**block.input)
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": output,
+                })
+        messages.append({"role": "user", "content": results})
+
+
+if __name__ == "__main__":
+    agent_loop()
