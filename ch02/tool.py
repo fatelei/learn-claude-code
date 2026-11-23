@@ -23,18 +23,18 @@ class PathEscapeError(ValueError):
 
 
 def safe_path(path: str | Path) -> Path:
-  if path is None or str(path).strip() == "":
-    raise ValueError("Path must not be empty")
+    if path is None or str(path).strip() == "":
+        raise ValueError("Path must not be empty")
 
-  base = WORKDIR.resolve()
-  raw = Path(path)
-  candidate = raw if raw.is_absolute() else (base / raw)
-  resolved = candidate.resolve()
+    base = WORKDIR.resolve()
+    raw = Path(path)
+    candidate = raw if raw.is_absolute() else (base / raw)
+    resolved = candidate.resolve()
 
-  if not resolved.is_relative_to(base):
-    raise PathEscapeError(f"Path '{path}' escapes WORKDIR '{base}'")
+    if not resolved.is_relative_to(base):
+        raise PathEscapeError(f"Path '{path}' escapes WORKDIR '{base}'")
 
-  return resolved
+    return resolved
 
 
 def run_read(path, limit=None):
@@ -43,9 +43,11 @@ def run_read(path, limit=None):
         lines = lines[:limit]
     return "\n".join(lines)
 
+
 def run_write(path, content):
     safe_path(path).write_text(content)
     return f"Wrote {len(content)} bytes to {path}"
+
 
 def run_edit(path, old_text, new_text):
     text = safe_path(path).read_text()
@@ -53,6 +55,7 @@ def run_edit(path, old_text, new_text):
         return "Error: text not found"
     safe_path(path).write_text(text.replace(old_text, new_text, 1))
     return f"Edited {path}"
+
 
 def run_glob(pattern):
     return "\n".join(g.glob(pattern, root_dir=WORKDIR))
@@ -84,11 +87,12 @@ TOOL_HANDLERS = {
 
 def agent_loop():
     user_input = input("please input:").strip()
-    print(repr(user_input))
+
     messages: list[MessageParam] = [{
         "role": "user",
         "content": user_input,
     }]
+
     TOOLS: list[ToolParam] = [
         {
             "name": "bash",
@@ -183,6 +187,7 @@ def agent_loop():
             max_tokens=8000,
         )
         messages.append({"role": "assistant", "content": response.content})
+        print(response.content)
 
         if response.stop_reason != "tool_use":
             return
