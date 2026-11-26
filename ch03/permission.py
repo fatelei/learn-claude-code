@@ -36,6 +36,7 @@ PERMISSION_RULES = [
     },
 ]
 
+
 def check_deny_list(command: str) -> str | None:
     for pattern in DENY_LIST:
         if pattern in command:
